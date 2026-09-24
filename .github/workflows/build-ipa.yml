@@ -1,0 +1,227 @@
+name: Build Madeira IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_configuration:
+        description: 'Xcode Build Configuration'
+        required: true
+        default: 'Debug'
+        type: choice
+        options:
+          - Debug
+          - Release
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build iOS IPA
+    runs-on: macos-14
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select Xcode Version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_15.2.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install System Dependencies
+        run: |
+          brew install sevenzip cmake ninja bison llvm
+          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+          echo "/opt/homebrew/opt/bison/bin" >> $GITHUB_PATH
+
+      - name: Refresh Bundled License Files
+        run: |
+          chmod +x build/stage-licenses.sh
+          ./build/stage-licenses.sh
+
+      - name: Download and Extract MSVC x86_64 Runtimes
+        run: |
+          mkdir -p app/Madeira/x86_64-vcruntime
+          curl -L "https://aka.ms/vs/17/release/vc_redist.x64.exe" -o vc_redist.x64.exe
+          7zz x vc_redist.x64.exe -o/tmp/vcredist -y
+          # Extract all required runtime DLLs from installer cabinet
+          find /tmp/vcredist -name "*.cab" -exec 7zz e {} -oapp/Madeira/x86_64-vcruntime/ -y \; || true
+          7zz e /tmp/vcredist -oapp/Madeira/x86_64-vcruntime/ concrt140.dll msvcp140*.dll vcamp140.dll vccorlib140.dll vcomp140.dll vcruntime140*.dll -r -y || true
+          echo "MSVC runtime files in app/Madeira/x86_64-vcruntime/:"
+          ls -la app/Madeira/x86_64-vcruntime/
+
+      - name: Cache LLVM 15 iOS Toolchain
+        id: cache-llvm-ios
+        uses: actions/cache@v4
+        with:
+          path: |
+            toolchains/llvm-host-build
+            toolchains/llvm-ios-build
+            toolchains/llvm-project
+          key: llvm-15-ios-host-target-${{ runner.os }}-v1
+
+      - name: Build LLVM 15 for iOS (if not cached)
+        if: steps.cache-llvm-ios.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains
+          cd toolchains
+          if [ ! -d "llvm-project" ]; then
+            git clone --depth 1 --branch llvmorg-15.0.7 https://github.com/llvm/llvm-project.git
+          fi
+          
+          # Patch AddLLVM.cmake to allow -dead_strip on iOS
+          sed -i '' 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/AddLLVM.cmake || true
+
+          # 1. Build host llvm-tblgen
+          mkdir -p llvm-host-build
+          cmake -S llvm-project/llvm -B llvm-host-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_ENABLE_PROJECTS="" \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF
+          cmake --build llvm-host-build --target llvm-tblgen -j$(sysctl -n hw.ncpu)
+
+          # 2. Cross-compile LLVM IR libraries for iOS
+          mkdir -p llvm-ios-build
+          cmake -S llvm-project/llvm -B llvm-ios-build \
+            -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TABLEGEN="$(pwd)/llvm-host-build/bin/llvm-tblgen" \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_ENABLE_PROJECTS="" \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF
+          cmake --build llvm-ios-build -j$(sysctl -n hw.ncpu)
+          cd ..
+
+      - name: Build Wine macOS Configuration and Headers
+        run: |
+          cd wine
+          mkdir -p build-macos
+          cd build-macos
+          ../configure --without-x --without-freetype --disable-tests
+          cd ../..
+
+      - name: Build wineserver Unix Library for iOS
+        run: |
+          mkdir -p build/wineserver/obj
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          
+          # Compile base libwineserver objects if app archive is not yet present
+          if [ ! -f "app/Madeira/libwineserver.a" ]; then
+            echo "Compiling base libwineserver objects..."
+            for f in wine/server/*.c; do
+              name=$(basename "$f" .c)
+              xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK_PATH" \
+                -miphoneos-version-min=17.0 -O2 \
+                -Iwine/include -Iwine/include/wine -Iwine/build-macos/include \
+                -Ibuild/wineserver -Iwine/server -Ibuild/ntdll-unix/shims \
+                -Ibuild/madsync -DHAVE_LINUX_NTSYNC_H=1 \
+                -include build/wineserver/config_ios.h -include stdarg.h \
+                -include build/wineserver/unicode_fix.h -include build/wineserver/wineserver_ios_kill.h \
+                -DBINDIR=\"/usr/local/bin\" -DDATADIR=\"/usr/local/share\" \
+                -D__WINESRC__ -DWINE_IOS=1 -Dmain=wineserver_main -Wno-implicit-function-declaration \
+                -c "$f" -o "build/wineserver/obj/$name.o" || true
+            done
+            ar rcs build/wineserver/obj/libwineserver.a build/wineserver/obj/*.o
+            cp build/wineserver/obj/libwineserver.a app/Madeira/libwineserver.a
+          fi
+
+          chmod +x build/wineserver/build.sh
+          ./build/wineserver/build.sh all
+          ls -la app/Madeira/libwineserver.a
+
+      - name: Build ntdll Unix Library for iOS
+        run: |
+          chmod +x build/ntdll-unix/build.sh
+          chmod +x build/crypto-unix/gen_gnutls_symtab.sh
+          ./build/ntdll-unix/build.sh
+          ls -la app/Madeira/libntdll_unix.a
+
+      - name: Build win32u Unix Library for iOS
+        run: |
+          chmod +x build/win32u-unix/build.sh
+          ./build/win32u-unix/build.sh
+          ls -la app/Madeira/libwin32u_unix.a
+
+      - name: Build FEXCore Static Libraries for iOS
+        run: |
+          chmod +x build/fex-ios/build.sh
+          ./build/fex-ios/build.sh
+          ls -la FEX/build-ios/FEXCore/Source/libFEXCore*.a
+
+      - name: Build DXMT Unix & Combine with LLVM Static Libraries
+        run: |
+          chmod +x build/dxmt-ios/build.sh
+          ./build/dxmt-ios/build.sh || true
+          
+          # Combine DXMT objects / libdxmt_unix.a with LLVM iOS libraries into libdxmt_combined.a
+          mkdir -p build/dxmt-ios/obj
+          if [ -f "build/dxmt-ios/libdxmt_unix.a" ]; then
+            xcrun -sdk iphoneos libtool -static -o app/Madeira/libdxmt_combined.a \
+              build/dxmt-ios/libdxmt_unix.a toolchains/llvm-ios-build/lib/*.a
+          elif [ -f "app/libdxmt_unix.a" ]; then
+            xcrun -sdk iphoneos libtool -static -o app/Madeira/libdxmt_combined.a \
+              app/libdxmt_unix.a toolchains/llvm-ios-build/lib/*.a
+          fi
+          ls -la app/Madeira/libdxmt_combined.a
+
+      - name: Build Madeira App via xcodebuild
+        run: |
+          CONFIG="${{ inputs.build_configuration || 'Debug' }}"
+          echo "Building configuration: $CONFIG"
+
+          xcodebuild -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration "$CONFIG" \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            clean build
+
+      - name: Package into IPA
+        run: |
+          mkdir -p ipa_build/Payload
+          APP_PATH=$(find build/DerivedData -name "Madeira.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Madeira.app not found in DerivedData"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+          cp -R "$APP_PATH" ipa_build/Payload/
+          cd ipa_build
+          zip -r ../Madeira.ipa Payload
+          cd ..
+          ls -lh Madeira.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-IPA
+          path: Madeira.ipa
+          retention-days: 14
+
+      - name: Create Release (Tags Only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Madeira.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
