@@ -66,7 +66,7 @@ jobs:
             toolchains/llvm-host-build
             toolchains/llvm-ios-build
             toolchains/llvm-project
-          key: llvm-15-ios-host-target-${{ runner.os }}-v2
+          key: llvm-15-ios-host-target-${{ runner.os }}-v3
 
       - name: Build LLVM 15 for iOS (if not cached)
         if: steps.cache-llvm-ios.outputs.cache-hit != 'true'
@@ -77,8 +77,9 @@ jobs:
             git clone --depth 1 --branch llvmorg-15.0.7 https://github.com/llvm/llvm-project.git
           fi
           
-          # Patch AddLLVM.cmake to allow -dead_strip on iOS
+          # Patch AddLLVM.cmake and HandleLLVMOptions.cmake to support Darwin/iOS Mach-O linker flags
           sed -i '' 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/AddLLVM.cmake || true
+          sed -i '' 's/MATCHES "Darwin/MATCHES "Darwin|iOS/g' llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake || true
 
           # 1. Build host llvm-tblgen
           mkdir -p llvm-host-build
@@ -96,7 +97,7 @@ jobs:
             -DLLVM_ENABLE_BINDINGS=OFF
           cmake --build llvm-host-build --target llvm-tblgen -j$(sysctl -n hw.ncpu)
 
-          # 2. Cross-compile LLVM IR libraries for iOS (disabling benchmarks and non-iOS features)
+          # 2. Cross-compile LLVM IR static libraries for iOS
           mkdir -p llvm-ios-build
           cmake -S llvm-project/llvm -B llvm-ios-build \
             -G Ninja \
@@ -113,6 +114,9 @@ jobs:
             -DLLVM_ENABLE_PROJECTS="" \
             -DLLVM_BUILD_TOOLS=OFF \
             -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_TOOL_LTO_BUILD=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -122,7 +126,8 @@ jobs:
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DBUILD_SHARED_LIBS=OFF
-          cmake --build llvm-ios-build -j$(sysctl -n hw.ncpu)
+          # Build only the static libraries needed (avoiding unneeded dylibs / tools)
+          cmake --build llvm-ios-build --target llvm-libraries -j$(sysctl -n hw.ncpu)
           cd ..
 
       - name: Build Wine macOS Configuration and Headers
