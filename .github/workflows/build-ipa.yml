@@ -37,9 +37,10 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          brew install sevenzip cmake ninja bison llvm
+          brew install sevenzip cmake ninja bison flex llvm
           echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/bison/bin" >> $GITHUB_PATH
+          echo "/opt/homebrew/opt/flex/bin" >> $GITHUB_PATH
 
       - name: Refresh Bundled License Files
         run: |
@@ -65,7 +66,7 @@ jobs:
             toolchains/llvm-host-build
             toolchains/llvm-ios-build
             toolchains/llvm-project
-          key: llvm-15-ios-host-target-${{ runner.os }}-v1
+          key: llvm-15-ios-host-target-${{ runner.os }}-v2
 
       - name: Build LLVM 15 for iOS (if not cached)
         if: steps.cache-llvm-ios.outputs.cache-hit != 'true'
@@ -87,10 +88,15 @@ jobs:
             -DLLVM_TARGETS_TO_BUILD="" \
             -DLLVM_ENABLE_PROJECTS="" \
             -DLLVM_BUILD_TOOLS=OFF \
-            -DLLVM_INCLUDE_TESTS=OFF
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF
           cmake --build llvm-host-build --target llvm-tblgen -j$(sysctl -n hw.ncpu)
 
-          # 2. Cross-compile LLVM IR libraries for iOS
+          # 2. Cross-compile LLVM IR libraries for iOS (disabling benchmarks and non-iOS features)
           mkdir -p llvm-ios-build
           cmake -S llvm-project/llvm -B llvm-ios-build \
             -G Ninja \
@@ -100,11 +106,22 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TABLEGEN="$(pwd)/llvm-host-build/bin/llvm-tblgen" \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios17.0 \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios17.0 \
+            -DLLVM_TARGET_ARCH=host \
             -DLLVM_TARGETS_TO_BUILD="" \
             -DLLVM_ENABLE_PROJECTS="" \
             -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_BUILD_UTILS=OFF \
             -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_ENABLE_ZLIB=OFF
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DBUILD_SHARED_LIBS=OFF
           cmake --build llvm-ios-build -j$(sysctl -n hw.ncpu)
           cd ..
 
