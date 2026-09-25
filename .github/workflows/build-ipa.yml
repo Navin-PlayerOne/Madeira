@@ -80,7 +80,7 @@ jobs:
             toolchains/llvm-host-build
             toolchains/llvm-ios-build
             toolchains/llvm-project
-          key: llvm-15-ios-host-target-${{ runner.os }}-v5
+          key: llvm-15-ios-host-target-${{ runner.os }}-v6
 
       - name: Build LLVM 15 for iOS (if not cached)
         if: steps.cache-llvm-ios.outputs.cache-hit != 'true'
@@ -93,11 +93,12 @@ jobs:
           
           # Patch AddLLVM.cmake and HandleLLVMOptions.cmake cleanly via Python to enable -dead_strip on iOS and prevent ELF link errors
           python3 -c '
+          import re
           paths = ["llvm-project/llvm/cmake/modules/AddLLVM.cmake", "llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake"]
           for path in paths:
               with open(path, "r") as f:
                   content = f.read()
-              content = content.replace("MATCHES \"Darwin\"", "MATCHES \"Darwin|iOS\"")
+              content = re.sub(r"MATCHES \"Darwin([^\"]*)\"", r"MATCHES \"Darwin|iOS\g<1>\"", content)
               with open(path, "w") as f:
                   f.write(content)
               print(f"Patched {path} successfully")
