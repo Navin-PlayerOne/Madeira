@@ -93,7 +93,7 @@ jobs:
           
           # Patch AddLLVM.cmake and HandleLLVMOptions.cmake to support Darwin/iOS Mach-O linker flags
           sed -i '' 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/AddLLVM.cmake || true
-          sed -i '' 's/MATCHES "Darwin/MATCHES "Darwin|iOS/g' llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake || true
+          sed -i '' 's/MATCHES "Darwin/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake || true
 
           # 1. Build host llvm-tblgen
           mkdir -p llvm-host-build
@@ -185,6 +185,10 @@ jobs:
 
       - name: Build wineserver Unix Library for iOS
         run: |
+          # Inject socket headers into config_ios.h and fd_ios.c
+          printf "\n#include <sys/socket.h>\n#include <netinet/in.h>\n" >> build/wineserver/config_ios.h
+          sed -i '' '1s/^/#include <sys\/socket.h>\n#include <netinet\/in.h>\n/' build/wineserver/fd_ios.c || true
+
           mkdir -p build/wineserver/obj
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
