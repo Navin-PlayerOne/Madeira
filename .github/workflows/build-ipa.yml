@@ -37,7 +37,7 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          brew install sevenzip cmake ninja bison flex llvm
+          brew install sevenzip cmake ninja bison flex llvm ccache
           echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/bison/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/flex/bin" >> $GITHUB_PATH
@@ -57,6 +57,20 @@ jobs:
           7zz e /tmp/vcredist -oapp/Madeira/x86_64-vcruntime/ concrt140.dll msvcp140*.dll vcamp140.dll vccorlib140.dll vcomp140.dll vcruntime140*.dll -r -y || true
           echo "MSVC runtime files in app/Madeira/x86_64-vcruntime/:"
           ls -la app/Madeira/x86_64-vcruntime/
+
+      - name: Install llvm-mingw Toolchain
+        run: |
+          mkdir -p toolchains
+          if [ ! -d "toolchains/llvm-mingw-20260922-ucrt-macos-universal" ]; then
+            echo "Downloading llvm-mingw..."
+            curl -L "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-macos-universal.tar.xz" -o /tmp/llvm-mingw.tar.xz
+            tar -xJ -C toolchains -f /tmp/llvm-mingw.tar.xz
+          fi
+          LLVM_DIR=$(find toolchains -maxdepth 1 -name "llvm-mingw-*-ucrt-macos-universal" | head -n 1)
+          # Symlink to the pinned directory name referenced by Madeira build scripts
+          ln -sfn "$(basename "$LLVM_DIR")" toolchains/llvm-mingw-20260421-ucrt-macos-universal
+          echo "$(pwd)/$LLVM_DIR/bin" >> $GITHUB_PATH
+          echo "llvm-mingw ready at $LLVM_DIR"
 
       - name: Cache LLVM 15 iOS Toolchain
         id: cache-llvm-ios
@@ -129,6 +143,15 @@ jobs:
           # Build only the static libraries needed (avoiding unneeded dylibs / tools)
           cmake --build llvm-ios-build --target llvm-libraries -j$(sysctl -n hw.ncpu)
           cd ..
+
+      - name: Build FreeType for iOS
+        run: |
+          mkdir -p research
+          if [ ! -d "research/freetype" ]; then
+            git clone --depth 1 --branch VER-2-13-3 https://github.com/freetype/freetype.git research/freetype
+          fi
+          chmod +x build/freetype-ios/build.sh
+          ./build/freetype-ios/build.sh
 
       - name: Build Wine macOS Configuration and Headers
         run: |
