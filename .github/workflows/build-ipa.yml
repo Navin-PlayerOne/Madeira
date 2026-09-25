@@ -80,7 +80,7 @@ jobs:
             toolchains/llvm-host-build
             toolchains/llvm-ios-build
             toolchains/llvm-project
-          key: llvm-15-ios-host-target-${{ runner.os }}-v3
+          key: llvm-15-ios-host-target-${{ runner.os }}-v4
 
       - name: Build LLVM 15 for iOS (if not cached)
         if: steps.cache-llvm-ios.outputs.cache-hit != 'true'
@@ -91,9 +91,16 @@ jobs:
             git clone --depth 1 --branch llvmorg-15.0.7 https://github.com/llvm/llvm-project.git
           fi
           
-          # Patch AddLLVM.cmake and HandleLLVMOptions.cmake to support Darwin/iOS Mach-O linker flags
-          sed -i '' 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/AddLLVM.cmake || true
-          sed -i '' 's/MATCHES "Darwin/MATCHES "Darwin|iOS"/g' llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake || true
+          # Patch AddLLVM.cmake cleanly via Python to enable -dead_strip on iOS
+          python3 -c '
+          path = "llvm-project/llvm/cmake/modules/AddLLVM.cmake"
+          with open(path, "r") as f:
+              content = f.read()
+          content = content.replace("MATCHES \"Darwin\"", "MATCHES \"Darwin|iOS\"")
+          with open(path, "w") as f:
+              f.write(content)
+          print("Patched AddLLVM.cmake successfully")
+          '
 
           # 1. Build host llvm-tblgen
           mkdir -p llvm-host-build
@@ -139,7 +146,8 @@ jobs:
             -DLLVM_ENABLE_ZLIB=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_TERMINFO=OFF \
-            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_SHARED_LINKER_FLAGS=""
           # Build only the static libraries needed (avoiding unneeded dylibs / tools)
           cmake --build llvm-ios-build --target llvm-libraries -j$(sysctl -n hw.ncpu)
           cd ..
@@ -172,8 +180,19 @@ jobs:
           #endif
           EOF
 
-          # Patch makedep.c to avoid fatal error on header ordering (e.g. sync.c including madeira_cfg.h first)
-          sed -i '' 's/fatal_error( "%s must be included before other headers/fprintf( stderr, "%s must be included before other headers/g' tools/makedep.c || true
+          # Patch makedep.c cleanly via Python to avoid fatal error on header ordering
+          python3 -c '
+          import re
+          path = "tools/makedep.c"
+          with open(path, "r") as f:
+              content = f.read()
+          content = re.sub(r"fatal_error\(\s*\"%s must be included before other headers",
+                           r"fprintf( stderr, \"%s must be included before other headers",
+                           content)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Patched makedep.c successfully")
+          '
 
           mkdir -p build-macos
           cd build-macos
@@ -187,7 +206,15 @@ jobs:
         run: |
           # Inject socket headers into config_ios.h and fd_ios.c
           printf "\n#include <sys/socket.h>\n#include <netinet/in.h>\n" >> build/wineserver/config_ios.h
-          sed -i '' '1s/^/#include <sys\/socket.h>\n#include <netinet\/in.h>\n/' build/wineserver/fd_ios.c || true
+          python3 -c '
+          path = "build/wineserver/fd_ios.c"
+          with open(path, "r") as f:
+              content = f.read()
+          if "<sys/socket.h>" not in content:
+              with open(path, "w") as f:
+                  f.write("#include <sys/socket.h>\n#include <netinet/in.h>\n" + content)
+          print("Injected socket headers into fd_ios.c")
+          '
 
           mkdir -p build/wineserver/obj
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
