@@ -156,10 +156,29 @@ jobs:
       - name: Build Wine macOS Configuration and Headers
         run: |
           cd wine
+          # Create stub for missing arm64ec_x64_export_iat.c to satisfy Wine's makedep
+          cat << 'EOF' > dlls/ntdll/arm64ec_x64_export_iat.c
+          /* arm64ec_x64_export_iat.c stub */
+          #ifndef ARM64EC_X64_EXPORT_IAT_H
+          #define ARM64EC_X64_EXPORT_IAT_H
+
+          static inline BOOL arm64ec_iat_slot_is_x64_export( HMODULE module, ULONG size_of_image, ULONG_PTR slot_rva,
+                                                             ULONG_PTR exports_rva, ULONG export_size,
+                                                             const void *code_map, ULONG code_map_count )
+          {
+              return FALSE;
+          }
+
+          #endif
+          EOF
+
           mkdir -p build-macos
           cd build-macos
           ../configure --without-x --without-freetype --disable-tests
-          cd ../..
+          make -j$(sysctl -n hw.ncpu) tools __tooldeps__ include || true
+          cd ..
+          ln -sfn build-macos build-arm64ec
+          cd ..
 
       - name: Build wineserver Unix Library for iOS
         run: |
