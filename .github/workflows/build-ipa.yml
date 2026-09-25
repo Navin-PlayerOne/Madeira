@@ -172,6 +172,9 @@ jobs:
           #endif
           EOF
 
+          # Patch makedep.c to avoid fatal error on header ordering (e.g. sync.c including madeira_cfg.h first)
+          sed -i '' 's/fatal_error( "%s must be included before other headers/fprintf( stderr, "%s must be included before other headers/g' tools/makedep.c || true
+
           mkdir -p build-macos
           cd build-macos
           ../configure --without-x --without-freetype --disable-tests
